@@ -1,0 +1,6 @@
+interface:
+  display_name: "codex动态背景设置"
+  short_description: "将30秒以内的视频自动整理为Codex动态背景，支持循环验证与卡帧恢复"
+  default_prompt: "使用 $codex-dynamic-background，将我提供的不超过30秒的视频设置为Codex动态背景，并验证持续播放。"
+policy:
+  allow_implicit_invocation: true

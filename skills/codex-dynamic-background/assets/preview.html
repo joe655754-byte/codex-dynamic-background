@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Codex 动态背景 · 本地预览</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font: 15px/1.7 system-ui, sans-serif; color: #f5f6fa; background: #0b1020; }
+    #wallpaper { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #070b16; }
+    #shade { position: fixed; inset: 0; pointer-events: none; background: #080c18; opacity: .3; }
+    main { position: relative; max-width: 680px; margin: 15vh auto 150px; padding: 36px; border: 1px solid #ffffff20; border-radius: 20px; background: #101725a6; backdrop-filter: blur(10px); }
+    h1 { margin: 0 0 12px; font-size: clamp(24px, 4vw, 34px); line-height: 1.3; }
+    p { color: #d8dce8; }
+    .label { color: #b7c7fa; font-size: 12px; letter-spacing: .14em; }
+    footer { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); width: min(680px, calc(100% - 28px)); display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; padding: 16px; border-radius: 14px; border: 1px solid #ffffff25; background: #0f162aeb; }
+    button { padding: 8px 15px; border: 1px solid #ffffff35; border-radius: 8px; background: #273450; color: #fff; cursor: pointer; font: inherit; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #9ab9ff; outline-offset: 4px; }
+    label { display: flex; align-items: center; gap: 8px; }
+    input { width: 90px; accent-color: #a8c2ff; }
+    #status { font-size: 12px; color: #b9c6e2; flex-basis: 100%; text-align: center; }
+    body.clean main { display: none; }
+    @media (max-width: 720px) { main { margin: 12vh 18px 200px; padding: 24px; } }
+  </style>
+</head>
+<body>
+  <video id="wallpaper" src="wallpaper.mp4" poster="poster.jpg" autoplay muted loop playsinline preload="auto"></video>
+  <div id="shade" aria-hidden="true"></div>
+  <main>
+    <p class="label">LOCAL VIDEO PREVIEW</p>
+    <h1>让你的片段，成为工作的背景。</h1>
+    <p>这是动态背景的离线预览。视频完整播放并循环，声音已移除；这里的阅读面板用于检查文字对比度，并非真实 Codex 界面。</p>
+    <p>检查人物、场景和移动物体是否持续运动，再由 agent 应用到 Codex 并验证实际播放。</p>
+  </main>
+  <footer>
+    <button id="play" type="button">暂停</button>
+    <button id="clean" type="button">隐藏面板</button>
+    <button id="fullscreen" type="button">全屏</button>
+    <label>遮罩 <input id="opacity" type="range" min="0" max="70" value="30" aria-label="背景遮罩浓度"></label>
+    <div id="status" role="status">正在加载本地视频…</div>
+  </footer>
+  <script>
+    const video = document.getElementById('wallpaper');
+    const play = document.getElementById('play');
+    const status = document.getElementById('status');
+    function update() {
+      play.textContent = video.paused ? '播放' : '暂停';
+      if (video.videoWidth) status.textContent = `${video.videoWidth} × ${video.videoHeight} · ${video.currentTime.toFixed(1)} / ${video.duration.toFixed(1)} 秒 · ${video.paused ? '已暂停' : '正在播放'}`;
+    }
+    play.addEventListener('click', async () => {
+      if (video.paused) { try { await video.play(); } catch (error) { status.textContent = `无法播放：${error.message}`; } }
+      else video.pause();
+    });
+    document.getElementById('clean').addEventListener('click', (event) => {
+      event.target.textContent = document.body.classList.toggle('clean') ? '显示面板' : '隐藏面板';
+    });
+    document.getElementById('opacity').addEventListener('input', (event) => {
+      document.getElementById('shade').style.opacity = Number(event.target.value) / 100;
+    });
+    document.getElementById('fullscreen').addEventListener('click', async () => {
+      try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
+      catch (error) { status.textContent = `全屏不可用：${error.message}`; }
+    });
+    ['loadedmetadata', 'play', 'pause', 'timeupdate'].forEach(name => video.addEventListener(name, update));
+    video.addEventListener('error', () => { status.textContent = '视频加载失败，请确认 wallpaper.mp4 与此 HTML 位于同一文件夹。'; });
+    video.play().catch(() => { status.textContent = '浏览器阻止了自动播放，点击“播放”继续。'; play.textContent = '播放'; });
+  </script>
+</body>
+</html>

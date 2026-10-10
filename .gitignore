@@ -1,0 +1,18 @@
+# User media and generated bundles never belong in the public skill.
+bundles/
+work/
+.runtime/
+.profile/
+__pycache__/
+*.py[cod]
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.log
+.env
+.env.*
+node_modules/
+.DS_Store
+Thumbs.db
