@@ -59,6 +59,26 @@ try {
     assert.equal(state.counts().disposed, 1);
   }
   {
+    const state = fixture();
+    let started = 0, stopped = 0;
+    await installWallpaper([], stylesheet, () => state.controller, 'contain', () => ({
+      start() { started++; }, dispose() { stopped++; }, diagnostics() { return { mode: 'adaptive' }; }
+    }));
+    assert.equal(started, 1);
+    assert.equal(globalThis.__codexDynamicBackground.contrast().mode, 'adaptive');
+    assert.equal((await globalThis.__codexDynamicBackground.health()).contrast.mode, 'adaptive');
+    assert.equal(globalThis.__codexDynamicBackground.version, 3);
+    globalThis.__codexDynamicBackground.cleanup();
+    assert.equal(stopped, 1);
+  }
+  {
+    const state = fixture();
+    const result = await installWallpaper([], stylesheet, () => state.controller, 'contain', () => { throw new Error('Canvas unavailable'); });
+    assert.equal(result.installed, true);
+    globalThis.__codexDynamicBackground.cleanup();
+    assert.equal(state.head.children[0].removed, true);
+  }
+  {
     fixture(); globalThis.location.href = 'app://-/index.html?initialRoute=avatar-overlay';
     assert.deepEqual(await installWallpaper([], stylesheet, () => { throw new Error('Must not create a controller for auxiliary pages.'); }), { skipped: true });
   }

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseOptions, integerOption, connectTo, isAppPage, verifyOwner } from './cdp.mjs';
 import { createPlaybackController } from './playback-controller.mjs';
+import { createAdaptiveContrast, pickReadableForeground } from './adaptive-contrast.mjs';
 import { stylesheet, installWallpaper } from './renderer.mjs';
 
 const args = parseOptions(process.argv.slice(2), ['port', 'owner-pid', 'official-exe', 'video', 'runtime', 'profile', 'run-id', 'fit']);
@@ -43,7 +44,7 @@ for (let offset = 0; offset < binary.length; offset += 192 * 1024) chunks.push(b
 async function inject(connection) {
   await connection.evaluate('globalThis.__codexDynamicBackgroundTransfer = []');
   for (const chunk of chunks) await connection.evaluate(`globalThis.__codexDynamicBackgroundTransfer.push(${JSON.stringify(chunk)})`);
-  const installed = await connection.evaluate(`(async () => { try { return await (${installWallpaper.toString()})(globalThis.__codexDynamicBackgroundTransfer, ${JSON.stringify(stylesheet)}, (${createPlaybackController.toString()}), ${JSON.stringify(fit)}); } finally { delete globalThis.__codexDynamicBackgroundTransfer; } })()`);
+  const installed = await connection.evaluate(`(async () => { try { return await (${installWallpaper.toString()})(globalThis.__codexDynamicBackgroundTransfer, ${JSON.stringify(stylesheet)}, (${createPlaybackController.toString()}), ${JSON.stringify(fit)}, (video, shade, root) => (${createAdaptiveContrast.toString()})(video, shade, root, (${pickReadableForeground.toString()}))); } finally { delete globalThis.__codexDynamicBackgroundTransfer; } })()`);
   if (!installed?.installed) throw new Error('The target is no longer the Codex main page.');
   log(`Wallpaper installed (${installed.width || 0} x ${installed.height || 0}; paused=${installed.paused}).`);
   await status('active', { width: installed.width, height: installed.height, paused: installed.paused, advancing: installed.advancing, visibility: installed.visibility, decodedFrames: installed.decodedFrames, presentedFrames: installed.presentedFrames });
@@ -95,7 +96,7 @@ try {
         }
         const state = await connection.evaluate('({ready:!!document.body,url:location.href,visibility:document.visibilityState,installed:!!globalThis.__codexDynamicBackground,version:globalThis.__codexDynamicBackground?.version,video:!!document.getElementById("codex-dynamic-background-video")})');
         if (state?.ready && isAppPage(state.url)) {
-          if (!state.installed || !state.video || state.version !== 2) {
+          if (!state.installed || !state.video || state.version !== 3) {
             if (state.visibility === 'visible') await inject(connection);
             else await status('suspended', { visibility: state.visibility, advancing: false });
           }
