@@ -213,7 +213,7 @@ def prepare(args: argparse.Namespace) -> dict:
     fully_decode(ffmpeg, source, int(source_stream["index"]))
     nominal_rate = source_timing["nominal_rate"]
     source_fps = float(nominal_rate) if nominal_rate else source_timing["measured_fps"]
-    limit_fps = args.fps or 60
+    limit_fps = args.fps
     scaling = "decrease" if args.fit == "contain" else "increase"
     # FFmpeg already rebases input timestamps during a normal transcode. A
     # setpts filter here can erase frame-duration hints and shorten the last
@@ -313,7 +313,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ffprobe", help="Explicit path to ffprobe")
     parser.add_argument("--fit", choices=("contain", "cover"), default="contain",
                         help="contain preserves the entire frame; cover explicitly crops to fill (default: contain)")
-    parser.add_argument("--fps", type=int, choices=(30, 60), help="Frame-rate ceiling; never interpolates (default: 60)")
+    parser.add_argument("--fps", type=int, choices=(30, 60), default=30,
+                        help="Frame-rate ceiling; never interpolates (default: 30)")
     parser.add_argument("--force", action="store_true", help="Replace an existing generated bundle")
     return parser.parse_args(argv)
 

@@ -29,6 +29,10 @@ FFPROBE = os.environ.get("FFPROBE") or shutil.which("ffprobe")
 
 
 class PreparationUnitTests(unittest.TestCase):
+    def test_default_frame_rate_ceiling_and_explicit_60(self):
+        self.assertEqual(prepare.parse_args(["source.mp4", "--output", "bundle"]).fps, 30)
+        self.assertEqual(prepare.parse_args(["source.mp4", "--output", "bundle", "--fps", "60"]).fps, 60)
+
     def test_duration_limit_and_invalid_values(self):
         prepare.enforce_duration(30.0)
         for value in (30.002, 31.0, 0, -1, float("nan"), float("inf")):
@@ -166,6 +170,15 @@ class RealVideoTests(unittest.TestCase):
     def test_high_fps_is_reduced_without_changing_duration(self):
         output = self.root / "fast-bundle"
         result = self.cli(self.fast, output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["fps"], 30)
+        self.assertEqual(metadata["decoded_frames"], 15)
+        self.assertAlmostEqual(metadata["duration_seconds"], .5, places=4)
+
+    def test_explicit_60_fps_retains_higher_cadence_and_full_duration(self):
+        output = self.root / "fast-60-bundle"
+        result = self.cli(self.fast, output, "--fps", "60")
         self.assertEqual(result.returncode, 0, result.stderr)
         metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["fps"], 60)

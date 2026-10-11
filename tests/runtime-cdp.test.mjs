@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseOptions, integerOption, isAppPage, assertLoopbackSocket } from '../skills/codex-dynamic-background/scripts/runtime/cdp.mjs';
+import { parseOptions, integerOption, isAppPage, assertLoopbackSocket, parseListeningSockets, assertOwnedLoopbackListeners, OwnershipLostError, ownerCheckAction } from '../skills/codex-dynamic-background/scripts/runtime/cdp.mjs';
 
 const args = parseOptions(['--runtime', 'C:\\视频 背景\\result', '--seconds', '65'], ['runtime', 'seconds']);
 assert.equal(args.runtime, 'C:\\视频 背景\\result');
@@ -22,16 +23,43 @@ assert.doesNotThrow(() => assertLoopbackSocket('ws://localhost:9335/devtools/pag
 for (const url of ['ws://example.com:9335/x', 'ws://127.0.0.1:9336/x', 'wss://127.0.0.1:9335/x', 'ws://0.0.0.0:9335/x', 'ws://user:password@127.0.0.1:9335/x']) {
   assert.throws(() => assertLoopbackSocket(url, 9335));
 }
+const listeners = parseListeningSockets(`Active Connections\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    127.0.0.1:9335         0.0.0.0:0              LISTENING       101\r\n  TCP    0.0.0.0:9335           0.0.0.0:0              LISTENING       101\r\n  TCP    [::]:9335              [::]:0                 LISTENING       202\r\n  TCP    127.0.0.1:9336         0.0.0.0:0              LISTENING       303`, 9335);
+assert.deepEqual(listeners, [
+  { address: '127.0.0.1:9335', pid: 101 },
+  { address: '0.0.0.0:9335', pid: 101 },
+  { address: '[::]:9335', pid: 202 }
+]);
+assert.doesNotThrow(() => assertOwnedLoopbackListeners([listeners[0]], 9335, 101));
+assert.throws(() => assertOwnedLoopbackListeners(listeners, 9335, 101), OwnershipLostError);
+assert.throws(() => assertOwnedLoopbackListeners([{ address: '127.0.0.1:9335', pid: 202 }], 9335, 101), OwnershipLostError);
+assert.equal(ownerCheckAction(new Error('Temporary command timeout')), 'retry');
+assert.equal(ownerCheckAction(new OwnershipLostError('Different owner')), 'stop');
 console.log('Runtime CLI validation, main-page filtering, and loopback endpoint tests passed.');
 
 if (process.platform === 'win32') {
   const launcher = fileURLToPath(new URL('../skills/codex-dynamic-background/scripts/start_background.ps1', import.meta.url)).replaceAll("'", "''");
+  const launcherSource = readFileSync(launcher.replaceAll("''", "'"), 'utf8');
+  assert.match(launcherSource, /netstat\.exe -ano -p tcp/);
+  assert.doesNotMatch(launcherSource, /\$listeners\s*=\s*@\(Get-NetTCPConnection/);
+  assert.match(launcherSource, /Get-Process -Id \$ownerPidValue/);
+  assert.match(launcherSource, /Get-ProfileArgument \$ownerMetadata\.CommandLine/);
+  assert.match(launcherSource, /Assert-ExistingWallpaperOwner \$previous \$existingHelper/);
+  assert.match(launcherSource, /Show-VerifiedCodexWindow \$verified\.Process/);
+  assert.match(launcherSource, /\$endpointReady -and \$existing\.active/);
+  assert.doesNotMatch(launcherSource, /The helper already exists but playback is not verified active/);
   const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
     $tokens=$null; $parseErrors=$null;
     $ast=[Management.Automation.Language.Parser]::ParseFile('${launcher}',[ref]$tokens,[ref]$parseErrors);
     if ($parseErrors.Count) {throw ($parseErrors | Out-String)};
     foreach ($function in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$true)) {
-      if ($function.Name -in @('Quote-NativeArgument','Get-ProfileArgument')) {Invoke-Expression $function.Extent.Text}
+      if ($function.Name -in @('Quote-NativeArgument','Get-ProfileArgument','Test-ExistingLoopbackListeners')) {Invoke-Expression $function.Extent.Text}
+    };
+    $good=@('TCP 127.0.0.1:9335 0.0.0.0:0 LISTENING 101');
+    if (-not (Test-ExistingLoopbackListeners $good 9335 101)) {throw 'Owned loopback listener was rejected.'};
+    if (Test-ExistingLoopbackListeners @() 9335 101) {throw 'Missing listener was accepted.'};
+    foreach ($bad in @('TCP 0.0.0.0:9335 0.0.0.0:0 LISTENING 101','TCP [::]:9335 [::]:0 LISTENING 101','TCP 127.0.0.1:9335 0.0.0.0:0 LISTENING 202')) {
+      $rejected=$false; try {Test-ExistingLoopbackListeners @($good,$bad) 9335 101|Out-Null} catch {$rejected=$true};
+      if (-not $rejected) {throw ('Unsafe existing listener accepted: '+$bad)}
     };
     $expected='C:\\资料 夜空\\.profile';
     foreach ($command in @('app.exe "--user-data-dir='+$expected+'"', 'app.exe --user-data-dir="'+$expected+'"')) {

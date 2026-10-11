@@ -36,22 +36,70 @@ export function assertLoopbackSocket(value, port) {
   }
 }
 
+export function parseListeningSockets(output, port) {
+  const listeners = [];
+  for (const line of output.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length !== 5 || columns[0] !== 'TCP' || columns[3] !== 'LISTENING') continue;
+    const delimiter = columns[1].lastIndexOf(':');
+    if (delimiter < 0 || Number(columns[1].slice(delimiter + 1)) !== port) continue;
+    listeners.push({ address: columns[1], pid: Number(columns[4]) });
+  }
+  return listeners;
+}
+
+export class OwnershipLostError extends Error {
+  constructor(message) { super(message); this.name = 'OwnershipLostError'; }
+}
+
+export function ownerCheckAction(error) {
+  return error instanceof OwnershipLostError ? 'stop' : 'retry';
+}
+
+export function assertOwnedLoopbackListeners(listeners, port, ownerPid) {
+  if (listeners.some(listener => listener.address !== `127.0.0.1:${port}` || listener.pid !== ownerPid))
+    throw new OwnershipLostError('The Codex debugger is no longer exclusively owned by the verified IPv4 loopback listener.');
+}
+
 export async function verifyOwner({ port, ownerPid, officialExe, profile }) {
   if (process.platform !== 'win32') throw new Error('The Codex background runtime requires Windows.');
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || !Number.isInteger(ownerPid) || ownerPid < 1) throw new Error('Invalid debugger owner or port.');
   if (!officialExe || !profile) throw new Error('The expected official executable and profile are required.');
+  // netstat avoids Get-NetTCPConnection's long CIM stall on a busy Windows PC.
+  // Include every listener for this port so wildcard or IPv6 exposure fails.
+  const { stdout: sockets } = await execFileAsync('netstat.exe', ['-ano', '-p', 'tcp'], { windowsHide: true, timeout: 10000 });
+  const listeners = parseListeningSockets(sockets, port);
+  if (!listeners.length) {
+    // An absent socket can be a short debugger restart. A missing or replaced
+    // process is a definitive ownership loss and should stop the helper.
+    const escapedExe = String(officialExe).replaceAll("'", "''");
+    const processCheck = `$p=Get-Process -Id ${ownerPid} -ErrorAction SilentlyContinue; if (!$p -or ![string]::Equals($p.Path,'${escapedExe}',[StringComparison]::OrdinalIgnoreCase)){exit 9}; 'alive'`;
+    try { await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', processCheck], { windowsHide: true, timeout: 10000 }); }
+    catch (error) {
+      if (Number(error.code) === 9) throw new OwnershipLostError('The verified Codex process has exited or changed.');
+      throw error;
+    }
+    throw new Error('The local debugger listener is temporarily unavailable.');
+  }
+  assertOwnedLoopbackListeners(listeners, port, ownerPid);
   const quote = value => String(value).replaceAll("'", "''");
   const command = `$ErrorActionPreference='Stop';
-    $p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${ownerPid}';
-    $listeners=@(Get-NetTCPConnection -LocalPort ${port} -State Listen);
-    if (!$p -or !$listeners.Count -or ![string]::Equals($p.ExecutablePath,'${quote(officialExe)}',[StringComparison]::OrdinalIgnoreCase)){exit 9};
-    foreach ($l in $listeners) {if ($l.LocalAddress -ne '127.0.0.1' -or $l.OwningProcess -ne ${ownerPid}) {exit 9}};
-    $m=[regex]::Match($p.CommandLine,'(?:^|\\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^\\s"]+))');
+    $p=Get-Process -Id ${ownerPid} -ErrorAction SilentlyContinue;
+    if (!$p -or ![string]::Equals($p.Path,'${quote(officialExe)}',[StringComparison]::OrdinalIgnoreCase)){exit 9};
+    $metadata=Get-CimInstance Win32_Process -Filter 'ProcessId = ${ownerPid}';
+    if (!$metadata -or !$metadata.CommandLine){exit 9};
+    $m=[regex]::Match($metadata.CommandLine,'(?:^|\\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^\\s"]+))');
     if (!$m.Success) {exit 9};
     $actual=if ($m.Groups[1].Success) {$m.Groups[1].Value} elseif ($m.Groups[2].Success) {$m.Groups[2].Value} else {$m.Groups[3].Value};
     if (![string]::Equals([IO.Path]::GetFullPath($actual),'${quote(profile)}',[StringComparison]::OrdinalIgnoreCase)){exit 9};
     'verified'`;
-  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 15000 });
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 30000 }));
+  } catch (error) {
+    if (Number(error.code) === 9) throw new OwnershipLostError('The debugger PID, official executable, or profile no longer matches.');
+    throw error;
+  }
   if (stdout.trim() !== 'verified') throw new Error('The Codex debugger ownership check failed.');
 }
 

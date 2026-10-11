@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseOptions, integerOption, connectTo, isAppPage, verifyOwner } from './cdp.mjs';
+import { parseOptions, integerOption, connectTo, isAppPage, verifyOwner, ownerCheckAction } from './cdp.mjs';
 import { createPlaybackController } from './playback-controller.mjs';
 import { createAdaptiveContrast, pickReadableForeground } from './adaptive-contrast.mjs';
 import { stylesheet, installWallpaper } from './renderer.mjs';
@@ -60,20 +60,39 @@ async function cleanup() {
 process.on('SIGINT', () => { stopping = true; });
 process.on('SIGTERM', () => { stopping = true; });
 await fs.mkdir(runtime, { recursive: true });
-await verifyOwner({ port, ownerPid, officialExe, profile }); lastOwnerCheck = Date.now();
-const browserResponse = await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(3000), redirect: 'error' });
-if (!browserResponse.ok) throw new Error('Could not verify the browser debugger identity.');
-const browserVersion = await browserResponse.json();
-const browserAnchor = await connect(browserVersion.webSocketDebuggerUrl);
-await status('waiting');
-log('Verified official Codex on a loopback debugging port. Waiting for app://-/index.html.');
-let endpointFailures = 0;
+async function openBrowserAnchor() {
+  const response = await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(3000), redirect: 'error' });
+  if (!response.ok) throw new Error(`Browser debugger returned HTTP ${response.status}.`);
+  const version = await response.json();
+  return connect(version.webSocketDebuggerUrl);
+}
+async function verifyCurrentOwner() {
+  await verifyOwner({ port, ownerPid, officialExe, profile });
+  lastOwnerCheck = Date.now();
+}
+await status('verifying');
+let browserAnchor = null, endpointFailures = 0;
 try {
   while (!stopping) {
-    if (browserAnchor.closed) { log('The original browser debugger session has closed.'); break; }
     if (await fs.access(stopFile).then(() => true, () => false)) break;
-    if (Date.now() - lastOwnerCheck > 10000) {
-      try { await verifyOwner({ port, ownerPid, officialExe, profile }); lastOwnerCheck = Date.now(); } catch { log('The verified Codex process or port has closed.'); break; }
+    if (!browserAnchor || browserAnchor.closed || Date.now() - lastOwnerCheck > 30000) {
+      try { await verifyCurrentOwner(); }
+      catch (error) {
+        if (ownerCheckAction(error) === 'stop') { log(`The verified Codex owner was lost: ${error.message}`); break; }
+        await status('reconnecting', { reason: `Temporarily unable to verify Codex: ${error.message}` });
+        await sleep(1500); continue;
+      }
+    }
+    if (!browserAnchor || browserAnchor.closed) {
+      try {
+        browserAnchor = await openBrowserAnchor();
+        endpointFailures = 0;
+        await status('waiting');
+        log('Connected to the verified official Codex browser debugger.');
+      } catch (error) {
+        await status('reconnecting', { reason: `Waiting for the verified browser debugger: ${error.message}` });
+        await sleep(1500); continue;
+      }
     }
     let targets;
     try {
@@ -81,8 +100,15 @@ try {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       targets = await response.json(); endpointFailures = 0;
     } catch (error) {
-      if (++endpointFailures >= 3) { log('Codex debugging endpoint closed.'); break; }
-      await sleep(1000); continue;
+      endpointFailures++;
+      if (endpointFailures % 3 === 0) {
+        try { await verifyCurrentOwner(); }
+        catch (ownerError) {
+          if (ownerCheckAction(ownerError) === 'stop') { log(`The verified Codex owner was lost: ${ownerError.message}`); break; }
+        }
+      }
+      await status('reconnecting', { reason: `Debugger page list temporarily unavailable: ${error.message}` });
+      await sleep(Math.min(5000, 1000 * endpointFailures)); continue;
     }
     const current = new Set();
     for (const target of targets) {
@@ -96,7 +122,7 @@ try {
         }
         const state = await connection.evaluate('({ready:!!document.body,url:location.href,visibility:document.visibilityState,installed:!!globalThis.__codexDynamicBackground,version:globalThis.__codexDynamicBackground?.version,video:!!document.getElementById("codex-dynamic-background-video")})');
         if (state?.ready && isAppPage(state.url)) {
-          if (!state.installed || !state.video || state.version !== 3) {
+          if (!state.installed || !state.video || state.version !== 4) {
             if (state.visibility === 'visible') await inject(connection);
             else await status('suspended', { visibility: state.visibility, advancing: false });
           }
@@ -118,4 +144,4 @@ try {
     for (const [id, connection] of sessions) if (!current.has(id)) { connection.close(); sessions.delete(id); }
     await sleep(1500);
   }
-} finally { await cleanup(); browserAnchor.close(); }
+} finally { await cleanup(); browserAnchor?.close(); }

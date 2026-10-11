@@ -40,12 +40,17 @@ try {
     assert.equal(result.installed, true);
     assert.equal(result.advancing, true);
     assert.equal(fixtureState.video.style.objectFit, expected);
+    const poster = fixtureState.body.children.find(element => element.id === 'codex-dynamic-background-poster');
+    assert.ok(poster);
+    assert.equal(poster.style.objectFit, expected);
+    assert.equal(poster.style.visibility, 'hidden');
     assert.equal(fixtureState.video.loop, true);
     assert.equal(fixtureState.video.muted, true);
     assert.match(fixtureState.head.children[0].textContent, /width: 100vw; height: 100vh; object-fit: contain;/);
     assert.equal(fixtureState.root.classList.contains('dark'), true);
     globalThis.__codexDynamicBackground.cleanup();
     assert.equal(fixtureState.video.removed, true);
+    assert.equal(poster.removed, true);
     assert.equal(fixtureState.video.paused, true);
     assert.equal(fixtureState.root.classList.contains('light'), true);
     assert.equal(fixtureState.root.getAttribute('data-codex-dynamic-background'), null);
@@ -67,7 +72,7 @@ try {
     assert.equal(started, 1);
     assert.equal(globalThis.__codexDynamicBackground.contrast().mode, 'adaptive');
     assert.equal((await globalThis.__codexDynamicBackground.health()).contrast.mode, 'adaptive');
-    assert.equal(globalThis.__codexDynamicBackground.version, 3);
+    assert.equal(globalThis.__codexDynamicBackground.version, 4);
     globalThis.__codexDynamicBackground.cleanup();
     assert.equal(stopped, 1);
   }

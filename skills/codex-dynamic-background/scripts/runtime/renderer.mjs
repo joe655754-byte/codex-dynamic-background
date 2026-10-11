@@ -59,6 +59,7 @@ html[data-codex-dynamic-background="on"] {
 html[data-codex-dynamic-background="on"] body { background: transparent !important; color: #eef4ff !important; isolation: isolate; }
 html[data-codex-dynamic-background="on"] #root { position: relative; z-index: 1; background: transparent !important; }
 #codex-dynamic-background-video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; object-position: center; z-index: 0; pointer-events: none; user-select: none; }
+#codex-dynamic-background-poster { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain; object-position: center; z-index: 0; pointer-events: none; user-select: none; visibility: hidden; }
 #codex-dynamic-background-shade { position: fixed; inset: 0; z-index: 0; pointer-events: none; background: rgba(3,9,20,.34); }
 html[data-codex-dynamic-background="on"] [data-theme] {
   --app-color-text-accent: var(--codex-wallpaper-link) !important;
@@ -111,20 +112,23 @@ export async function installWallpaper(chunks, css, createController, fit = 'con
   const video = document.createElement('video');
   video.id = 'codex-dynamic-background-video'; video.setAttribute('aria-hidden', 'true');
   video.style.objectFit = fit === 'cover' ? 'cover' : 'contain';
+  const poster = document.createElement('img');
+  poster.id = 'codex-dynamic-background-poster'; poster.setAttribute('aria-hidden', 'true'); poster.alt = '';
+  poster.style.objectFit = video.style.objectFit; poster.style.visibility = 'hidden';
   video.muted = true; video.defaultMuted = true; video.loop = true; video.autoplay = true; video.playsInline = true;
   video.preload = 'auto';
   video.disablePictureInPicture = true; video.setAttribute('muted', ''); video.src = source;
   const shade = document.createElement('div'); shade.id = 'codex-dynamic-background-shade'; shade.setAttribute('aria-hidden', 'true');
   root.setAttribute('data-codex-dynamic-background', 'on'); root.classList.add('dark'); root.classList.remove('light');
-  document.head.append(style); document.body.prepend(video, shade);
-  const controller = createController(video);
+  document.head.append(style); document.body.prepend(video, poster, shade);
+  const controller = createController(video, document, globalThis.window ?? globalThis, performance, poster);
   let contrast;
   try { contrast = createContrast?.(video, shade, root); }
   catch { shade.style.background = 'rgba(3,9,20,.76)'; }
-  const state = { version: 3, video, source, health: async () => ({ ...await controller.check(), contrast: contrast?.diagnostics() }), diagnostics: controller.diagnostics, contrast: () => contrast?.diagnostics(), cleanup() {
+  const state = { version: 4, video, source, health: async () => ({ ...await controller.check(), contrast: contrast?.diagnostics() }), diagnostics: controller.diagnostics, contrast: () => contrast?.diagnostics(), cleanup() {
     contrast?.dispose();
     controller.dispose();
-    video.pause(); video.removeAttribute('src'); video.load(); video.remove(); shade.remove(); style.remove(); URL.revokeObjectURL(source);
+    video.pause(); video.removeAttribute('src'); video.load(); video.remove(); poster.remove(); shade.remove(); style.remove(); URL.revokeObjectURL(source);
     if (oldAttribute === null) root.removeAttribute('data-codex-dynamic-background'); else root.setAttribute('data-codex-dynamic-background', oldAttribute);
     root.classList.toggle('dark', hadDark); root.classList.toggle('light', hadLight);
     delete globalThis.__codexDynamicBackground;
@@ -157,6 +161,7 @@ export async function installWallpaper(chunks, css, createController, fit = 'con
       }; tick();
     });
     controller.resetProgress();
+    controller.capturePoster?.();
     contrast?.start();
     return { installed: true, width: video.videoWidth, height: video.videoHeight, paused: video.paused, advancing: true, visibility: document.visibilityState, decodedFrames: video.getVideoPlaybackQuality().totalVideoFrames, presentedFrames: controller.diagnostics().presentedFrames };
   } catch (error) { state.cleanup(); throw error; }

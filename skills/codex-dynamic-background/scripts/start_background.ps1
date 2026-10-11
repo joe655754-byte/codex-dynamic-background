@@ -109,14 +109,114 @@ foreach ($relative in @('app\ChatGPT.exe', 'app\Codex.exe')) {
 }
 if (-not $codexExecutable) { throw 'This Codex package has an unsupported launcher layout. Expected app/ChatGPT.exe or app/Codex.exe; the installation was left unchanged.' }
 
-if (Get-OwnHelper $previous) {
-    $existing = Get-RuntimeStatus $previous
-    if ($existing.active) {
-        Write-Host 'The background helper is running and its latest playback sample is advancing.'
-        Write-Host 'After replacing wallpaper.mp4, run -Stop and start again to load the new video.'
-        exit 0
+function Assert-ExistingWallpaperOwner($State, $Helper) {
+    if (-not [string]::Equals([string]$State.profile, $profile, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$State.executable, $codexExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The running helper belongs to a different Codex executable or profile; it was left untouched.'
     }
-    throw 'The helper already exists but playback is not verified active. Check -Status and .runtime/injector-error.log, or use -Stop before retrying.'
+    $existingPid = 0; $existingPort = 0
+    if (-not [int]::TryParse([string]$State.codexPid, [ref]$existingPid) -or $existingPid -le 0 -or
+        -not [int]::TryParse([string]$State.debugPort, [ref]$existingPort) -or $existingPort -lt 1024 -or $existingPort -gt 65535) {
+        throw 'The running helper has no valid Codex PID or debugger port; it was left untouched.'
+    }
+    if (-not [string]::Equals($Helper.ExecutablePath, $nodePath, [StringComparison]::OrdinalIgnoreCase) -or
+        $Helper.CommandLine.IndexOf($profile, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $Helper.CommandLine.IndexOf($codexExecutable, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw 'The running helper no longer matches this Node runtime, Codex executable, and profile.'
+    }
+    $owner = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+    $metadata = Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid" -ErrorAction SilentlyContinue
+    if (-not $owner -or -not $metadata -or
+        -not [string]::Equals($owner.Path, $codexExecutable, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Get-ProfileArgument $metadata.CommandLine), $profile, [StringComparison]::OrdinalIgnoreCase) -or
+        $metadata.CommandLine -match '--type=' -or
+        $metadata.CommandLine.IndexOf('--remote-debugging-address=127.0.0.1', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw 'The saved Codex PID is not the verified official main process for this profile.'
+    }
+    $portMatch = [regex]::Match($metadata.CommandLine, '--remote-debugging-port=(\d+)')
+    if (-not $portMatch.Success -or [int]$portMatch.Groups[1].Value -ne $existingPort) {
+        throw 'The saved debugger port no longer matches the verified Codex process.'
+    }
+    return [pscustomobject]@{ Process = $owner; Pid = $existingPid; Port = $existingPort }
+}
+
+function Test-ExistingLoopbackListeners([string[]]$Lines, [int]$Port, [int]$OwnerPid) {
+    $listeners = @($Lines | ForEach-Object {
+        $columns = $_.Trim() -split '\s+'
+        if ($columns.Count -eq 5 -and $columns[0] -eq 'TCP' -and $columns[3] -eq 'LISTENING') {
+            $separator = $columns[1].LastIndexOf(':')
+            if ($separator -ge 0 -and $columns[1].Substring($separator + 1) -eq [string]$Port) {
+                [pscustomobject]@{ LocalAddress = $columns[1]; OwningProcess = $columns[4] }
+            }
+        }
+    })
+    if (-not $listeners.Count) { return $false }
+    foreach ($listener in $listeners) {
+        if ($listener.LocalAddress -ne "127.0.0.1:$Port" -or [string]$listener.OwningProcess -ne [string]$OwnerPid) {
+            throw 'The existing debugger port is no longer exclusively owned by the verified IPv4 loopback process.'
+        }
+    }
+    return $true
+}
+
+function Test-ExistingLoopbackEndpoint([int]$Port, [int]$OwnerPid) {
+    if (-not (Test-ExistingLoopbackListeners @(netstat.exe -ano -p tcp) $Port $OwnerPid)) { return $false }
+    try { $version = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/version" -TimeoutSec 2 -MaximumRedirection 0 }
+    catch { return $false }
+    $socket = [Uri]$version.webSocketDebuggerUrl
+    if ($socket.Scheme -ne 'ws' -or $socket.Host -notin @('127.0.0.1', 'localhost') -or $socket.Port -ne $Port) {
+        throw 'The existing browser debugger endpoint no longer has a verified local socket.'
+    }
+    return $true
+}
+
+function Show-VerifiedCodexWindow($Owner) {
+    $Owner.Refresh()
+    if ($Owner.MainWindowHandle -ne [IntPtr]::Zero) {
+        if (-not ('CodexWallpaper.WindowControl' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CodexWallpaper {
+    public static class WindowControl {
+        [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr handle, int command);
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr handle);
+    }
+}
+'@
+        }
+        [void][CodexWallpaper.WindowControl]::ShowWindowAsync($Owner.MainWindowHandle, 9)
+        if ([CodexWallpaper.WindowControl]::SetForegroundWindow($Owner.MainWindowHandle)) { return }
+    }
+    # AppActivate accepts a numeric PID and does not need a window title.
+    $shell = New-Object -ComObject WScript.Shell
+    [void]$shell.AppActivate([int]$Owner.Id)
+}
+
+$existingHelper = Get-OwnHelper $previous
+if ($existingHelper) {
+    $verified = Assert-ExistingWallpaperOwner $previous $existingHelper
+    # Reject a mismatched listener before touching the existing app window.
+    $null = Test-ExistingLoopbackEndpoint $verified.Port $verified.Pid
+    Show-VerifiedCodexWindow $verified.Process
+    $resumeDeadline = [DateTime]::UtcNow.AddSeconds(35)
+    $previousActiveTime = $null
+    while ([DateTime]::UtcNow -lt $resumeDeadline) {
+        $endpointReady = Test-ExistingLoopbackEndpoint $verified.Port $verified.Pid
+        $existing = Get-RuntimeStatus $previous
+        if (-not $existing.helperRunning) { throw 'The existing wallpaper helper exited while the window was being restored. Codex was left open.' }
+        if ($existing.playback -and $existing.playback.state -eq 'stopped') { throw 'The existing wallpaper helper has stopped. Codex was left open.' }
+        if ($endpointReady -and $existing.active) {
+            if ($previousActiveTime -and $previousActiveTime -ne $existing.playback.time) {
+                Write-Host 'The verified Codex wallpaper window is visible and playback advanced in two independent samples.'
+                Write-Host 'After replacing wallpaper.mp4, run -Stop and start again to load the new video.'
+                exit 0
+            }
+            $previousActiveTime = $existing.playback.time
+        }
+        Start-Sleep -Milliseconds 600
+    }
+    throw 'The verified wallpaper window was restored, but playback did not become active within 35 seconds. Check -Status and .runtime/injector-error.log; Codex was left open.'
 }
 
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
@@ -144,21 +244,34 @@ if (-not $profileProcess) {
     Start-Process -FilePath $codexExecutable -ArgumentList (($appArguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ') -WindowStyle Normal | Out-Null
 } else { Write-Host 'Reusing this bundle''s verified Codex profile.' }
 
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
+$deadline = [DateTime]::UtcNow.AddSeconds(45)
 $ownerPid = $null
 $lastReason = 'The local debugging endpoint has not appeared.'
 while ([DateTime]::UtcNow -lt $deadline) {
     try {
-        $listeners = @(Get-NetTCPConnection -LocalPort $debugPort -State Listen -ErrorAction Stop)
-        if (-not $listeners.Count -or @($listeners | Where-Object { $_.LocalAddress -ne '127.0.0.1' }).Count) { throw 'The debugger must listen only on IPv4 loopback.' }
-        $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $($listeners[0].OwningProcess)"
-        if (-not $owner -or -not [string]::Equals($owner.ExecutablePath, $codexExecutable, [StringComparison]::OrdinalIgnoreCase)) { throw 'The debugging port is not owned by the official Codex executable.' }
-        if (-not [string]::Equals((Get-ProfileArgument $owner.CommandLine), $profile, [StringComparison]::OrdinalIgnoreCase)) { throw 'The debugging port belongs to another profile.' }
-        foreach ($listener in $listeners) { if ($listener.OwningProcess -ne $owner.ProcessId) { throw 'The debugging port has multiple owners.' } }
+        # Get-NetTCPConnection may block for over 20 seconds on a busy PC.
+        # Keep every listener for the port; a wildcard/IPv6 row must fail.
+        $listeners = @(netstat.exe -ano -p tcp | ForEach-Object {
+            $columns = $_.Trim() -split '\s+'
+            if ($columns.Count -eq 5 -and $columns[0] -eq 'TCP' -and $columns[3] -eq 'LISTENING') {
+                $separator = $columns[1].LastIndexOf(':')
+                if ($separator -ge 0 -and $columns[1].Substring($separator + 1) -eq [string]$debugPort) {
+                    [pscustomobject]@{ LocalAddress = $columns[1]; OwningProcess = $columns[4] }
+                }
+            }
+        })
+        if (-not $listeners.Count -or @($listeners | Where-Object { $_.LocalAddress -ne "127.0.0.1:$debugPort" }).Count) { throw 'The debugger must listen only on IPv4 loopback.' }
+        $ownerPidValue = 0
+        if (-not [int]::TryParse([string]$listeners[0].OwningProcess, [ref]$ownerPidValue) -or $ownerPidValue -le 0) { throw 'The debugger listener has no valid owner PID.' }
+        foreach ($listener in $listeners) { if ([string]$listener.OwningProcess -ne [string]$ownerPidValue) { throw 'The debugging port has multiple owners.' } }
+        $owner = Get-Process -Id $ownerPidValue -ErrorAction SilentlyContinue
+        if (-not $owner -or -not [string]::Equals($owner.Path, $codexExecutable, [StringComparison]::OrdinalIgnoreCase)) { throw 'The debugging port is not owned by the official Codex executable.' }
+        $ownerMetadata = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPidValue"
+        if (-not $ownerMetadata -or -not [string]::Equals((Get-ProfileArgument $ownerMetadata.CommandLine), $profile, [StringComparison]::OrdinalIgnoreCase)) { throw 'The debugging port belongs to another profile.' }
         $version = Invoke-RestMethod -Uri "http://127.0.0.1:$debugPort/json/version" -TimeoutSec 2 -MaximumRedirection 0
         $socket = [Uri]$version.webSocketDebuggerUrl
         if ($socket.Scheme -ne 'ws' -or $socket.Host -notin @('127.0.0.1', 'localhost') -or $socket.Port -ne $debugPort) { throw 'The endpoint has no verified local browser debugger socket.' }
-        $ownerPid = [int]$owner.ProcessId
+        $ownerPid = $ownerPidValue
         break
     } catch { $lastReason = $_.Exception.Message; Start-Sleep -Milliseconds 500 }
 }

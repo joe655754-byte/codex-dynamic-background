@@ -7,7 +7,7 @@
 ## 能做什么
 
 - 读取用户指定的本地视频，检查时长、视频轨和解码情况。
-- 保留完整片段，转换为最高 1080p / 60fps 的 H.264 视频；默认保全画面，支持显式裁边铺满。
+- 保留完整片段，转换为默认最高 1080p / 30fps 的 H.264 视频；需要时可显式选 60fps。默认保全画面，支持显式裁边铺满。
 - 生成离线预览、海报和处理元数据。
 - 在 Windows 版 Codex 的独立背景窗口应用视频和深色玻璃主题。根据当前画面自动调整遮罩、次要文字、链接和按钮文案的对比度。
 - 持续检测时间与视频帧，卡帧时自动续播，必要时重新加载视频。
@@ -78,7 +78,7 @@ python "$skill\scripts\prepare_video.py" 'D:\Videos\我的背景.mp4' --output $
 node "$skill\scripts\verify_playback.mjs" --runtime "$bundle\.runtime" --seconds 65
 ```
 
-视频处理参数：`--fit contain`（默认，完整构图）、`--fit cover`（裁边铺满）、`--fps 30` / `--fps 60`、`--ffmpeg <path>`、`--ffprobe <path>`、`--force`。不指定帧率时保留源帧率并限制最高 60fps，不做 AI 补帧。
+视频处理参数：`--fit contain`（默认，完整构图）、`--fit cover`（裁边铺满）、`--fps 30`（默认）/ `--fps 60`、`--ffmpeg <path>`、`--ffprobe <path>`、`--force`。不指定帧率时保留 30fps 以下的源帧率，将更高帧率降到 30fps；只减少帧数，不裁剪片段、改变时长或做 AI 补帧。
 
 ```powershell
 # 查看实时状态
@@ -122,7 +122,7 @@ node --test tests/runtime*.test.mjs
 
 需要 FFmpeg / FFprobe 的集成测试会使用本地工具，缺少时明确跳过。可通过 `FFMPEG` / `FFPROBE` 环境变量指定位置。测试不登录账号、不关闭用户应用、不修改已有背景。
 
-运行时故障测试覆盖假播放卡帧、逐级恢复、循环归零、隐藏恢复和停止后的异步清理。真实窗口验证另由 `verify_playback.mjs` 完成，不能用离线单测冒充实机验证。
+运行时故障测试覆盖假播放卡帧、短暂停播续播、冻结帧遮盖硬重载、等待新帧解码、有界重试、循环归零、隐藏恢复、端口归属校验和停止后的异步清理。助手在调试端口短暂不可用时会保留已注入的画面并重连，确认端口归属失效才退出。真实窗口验证另由 `verify_playback.mjs` 完成，不能用离线单测冒充实机验证。
 
 完整流程见 [SKILL.md](skills/codex-dynamic-background/SKILL.md)，排查见 [troubleshooting.md](skills/codex-dynamic-background/references/troubleshooting.md)。
 
